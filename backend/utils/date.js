@@ -35,4 +35,18 @@ const parseDateInput = (value) => {
   return toIsoDateString(fallbackDate);
 };
 
-module.exports = { parseDateInput, toIsoDateString };
+const parsePlainDate = (value) => {
+  const text = String(value || '').slice(0, 10);
+  const match = text.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (!match) return null;
+  return new Date(Date.UTC(Number(match[1]), Number(match[2]) - 1, Number(match[3])));
+};
+
+const addDaysToPlainDate = (value, days) => {
+  const date = parsePlainDate(value);
+  if (!date) return null;
+  date.setUTCDate(date.getUTCDate() + Number(days));
+  return toIsoDateString(date);
+};
+
+module.exports = { parseDateInput, toIsoDateString, parsePlainDate, addDaysToPlainDate };

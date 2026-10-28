@@ -1,5 +1,5 @@
 const db = require('../config/db');
-const { parseDateInput, toIsoDateString } = require('../utils/date');
+const { parseDateInput, addDaysToPlainDate, parsePlainDate } = require('../utils/date');
 
 const validateCycle = ({ start_date, end_date, flow_intensity, notes }) => {
   const normalizedStartDate = parseDateInput(start_date);
@@ -114,7 +114,7 @@ const predictNextPeriod = (req, res) => {
   const user_id = req.user.id;
 
   db.query(
-    'SELECT start_date FROM cycles WHERE user_id = ? ORDER BY start_date DESC LIMIT 3',
+    'SELECT start_date FROM cycles WHERE user_id = ? ORDER BY start_date DESC',
     [user_id],
     (err, results) => {
       if (err) {
@@ -125,36 +125,46 @@ const predictNextPeriod = (req, res) => {
         return res.json({ message: 'Need at least 2 cycles to predict' });
       }
 
-      // Calculate average cycle length
-      let totalDays = 0;
+      const intervals = [];
       for (let i = 0; i < results.length - 1; i++) {
-        const date1 = new Date(results[i].start_date);
-        const date2 = new Date(results[i + 1].start_date);
-        const diff = Math.abs((date1 - date2) / (1000 * 60 * 60 * 24));
-        totalDays += diff;
+        const newer = parsePlainDate(results[i].start_date);
+        const older = parsePlainDate(results[i + 1].start_date);
+        if (newer && older) intervals.push(Math.round((newer - older) / 86400000));
       }
+      if (intervals.length === 0) return res.json({ message: 'Need at least 2 valid cycle dates to predict' });
 
-      const avgCycleLength = Math.round(totalDays / (results.length - 1));
-      const lastPeriod = new Date(results[0].start_date);
-      const nextPeriod = new Date(lastPeriod);
-      nextPeriod.setDate(nextPeriod.getDate() + avgCycleLength);
+      const sortedIntervals = [...intervals].sort((left, right) => left - right);
+      const totalDays = intervals.reduce((sum, value) => sum + value, 0);
+      const average = totalDays / intervals.length;
+      const median = sortedIntervals.length % 2
+        ? sortedIntervals[Math.floor(sortedIntervals.length / 2)]
+        : (sortedIntervals[sortedIntervals.length / 2 - 1] + sortedIntervals[sortedIntervals.length / 2]) / 2;
+      const lastPeriod = String(results[0].start_date).slice(0, 10);
+      const nextPeriod = addDaysToPlainDate(lastPeriod, Math.round(average));
+      const predictionRangeStart = addDaysToPlainDate(lastPeriod, Math.min(...intervals));
+      const predictionRangeEnd = addDaysToPlainDate(lastPeriod, Math.max(...intervals));
+      const meanDeviation = intervals.reduce((sum, value) => sum + ((value - average) ** 2), 0) / intervals.length;
+      const variabilityDays = Math.sqrt(meanDeviation);
+      const confidence = variabilityDays / average > 0.2 ? 'low' : variabilityDays / average > 0.1 ? 'medium' : 'higher';
 
-      const ovulationDate = new Date(nextPeriod);
-      ovulationDate.setDate(ovulationDate.getDate() - 14);
-
-      const fertileWindowStart = new Date(ovulationDate);
-      fertileWindowStart.setDate(fertileWindowStart.getDate() - 2);
-
-      const fertileWindowEnd = new Date(ovulationDate);
-      fertileWindowEnd.setDate(fertileWindowEnd.getDate() + 2);
+      const ovulationDate = addDaysToPlainDate(nextPeriod, -14);
+      const fertileWindowStart = addDaysToPlainDate(ovulationDate, -2);
+      const fertileWindowEnd = addDaysToPlainDate(ovulationDate, 2);
 
       res.json({
-        average_cycle_length: avgCycleLength,
-        last_period: toIsoDateString(lastPeriod),
-        next_period_predicted: toIsoDateString(nextPeriod),
-        ovulation_date: toIsoDateString(ovulationDate),
-        fertile_window_start: toIsoDateString(fertileWindowStart),
-        fertile_window_end: toIsoDateString(fertileWindowEnd),
+        average_cycle_length: Number(average.toFixed(1)),
+        median_cycle_length: Number(median.toFixed(1)),
+        cycle_length_min: Math.min(...intervals),
+        cycle_length_max: Math.max(...intervals),
+        variability_days: Number(variabilityDays.toFixed(1)),
+        forecast_confidence: confidence,
+        last_period: lastPeriod,
+        next_period_predicted: nextPeriod,
+        prediction_range_start: predictionRangeStart,
+        prediction_range_end: predictionRangeEnd,
+        ovulation_date: ovulationDate,
+        fertile_window_start: fertileWindowStart,
+        fertile_window_end: fertileWindowEnd,
       });
     }
   );

@@ -7,7 +7,7 @@
     "start": "node server.js",
     "rag:ingest": "node rag/ingest.js",
     "rag:evaluate": "node rag/evaluate.js",
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "test": "node --test tests/*.test.js"
   },
   "keywords": [],
   "author": "",

@@ -29,4 +29,12 @@ module.exports = [
   { question: 'What should I do about bleeding with weakness?', expectedSource: 'https://www.acog.org/womens-health/faqs/abnormal-uterine-bleeding' },
   { question: 'Why should persistent cycle changes be evaluated?', expectedSource: 'https://www.acog.org/womens-health/faqs/abnormal-uterine-bleeding' },
   { question: 'Is a period prediction a diagnosis?', expectedSource: 'https://www.acog.org/womens-health/faqs/your-menstrual-cycle' },
+  { question: 'What can help with mild period cramps at home?', expectedSource: 'https://www.acog.org/womens-health/faqs/dysmenorrhea-painful-periods' },
+  { question: 'Why is a calendar fertile-window estimate not guaranteed?', expectedSource: 'https://www.acog.org/womens-health/infographics/fertility-awareness-based-methods-of-family-planning' },
+  { question: 'What sleep habits may support rest during cycle changes?', expectedSource: 'https://womenshealth.gov/menstrual-cycle/your-menstrual-cycle' },
+  { question: 'What details should I track when my periods become irregular?', expectedSource: 'https://womenshealth.gov/menstrual-cycle/period-problems' },
+  { question: 'What is the best smartphone for taking cycle notes?', expectedSource: null },
+  { question: 'Can you write my college assignment about nutrition?', expectedSource: null },
+  { question: 'What is the weather forecast today?', expectedSource: null },
+  { question: 'Play a Tamil song for me.', expectedSource: null },
 ];

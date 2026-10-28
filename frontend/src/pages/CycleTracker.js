@@ -33,13 +33,6 @@ const getIsoDateString = (date) => {
   return date.toISOString().split('T')[0];
 };
 
-const parseDate = (value) => {
-  if (!value) return null;
-  const [day, month, year] = value.split('-');
-  const parsed = new Date(`${year}-${month}-${day}`);
-  return Number.isNaN(parsed.getTime()) ? null : parsed;
-};
-
 const CycleTracker = () => {
   const { token } = useAuth();
   const { notify } = useUI();
@@ -115,7 +108,7 @@ const CycleTracker = () => {
       cycles
         .map((cycle) => {
           if (!cycle.start_date) return '';
-          const parsed = new Date(cycle.start_date);
+          const parsed = new Date(`${String(cycle.start_date).slice(0, 10)}T00:00:00Z`);
           if (Number.isNaN(parsed.getTime())) return '';
           if (parsed < sixMonthsAgo) return '';
           return getIsoDateString(parsed);

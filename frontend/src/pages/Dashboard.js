@@ -12,7 +12,7 @@ import jsPDF from 'jspdf';
 const getCyclePhase = (lastPeriodDate, avgCycleLength = 28) => {
   if (!lastPeriodDate) return null;
   const today = new Date();
-  const last = new Date(lastPeriodDate);
+  const last = parsePlainDate(lastPeriodDate);
   const dayOfCycle = Math.floor((today - last) / (1000 * 60 * 60 * 24)) + 1;
 
   if (dayOfCycle <= 5) return { phase: 'Menstrual', day: dayOfCycle, color: '#ef4444', emoji: '🩸', tip: 'Rest, stay warm, and hydrate well today.' };
@@ -26,7 +26,7 @@ const getCyclePhase = (lastPeriodDate, avgCycleLength = 28) => {
 const getDaysUntil = (nextPeriodDate) => {
   if (!nextPeriodDate) return null;
   const today = new Date();
-  const next = new Date(nextPeriodDate);
+  const next = parsePlainDate(nextPeriodDate);
   const diff = Math.ceil((next - today) / (1000 * 60 * 60 * 24));
   return diff;
 };
@@ -36,7 +36,7 @@ const phaseQuotes = {
   Menstrual: ['Your body is doing something incredible. Rest is productive.', 'Honour your need for slowness today.', 'Healing is happening right now.'],
   Follicular: ['New beginnings are your superpower this week.', 'Your clarity and creativity are peaking.', 'This is your fresh start energy.'],
   Ovulation: ['You are magnetic and powerful today.', 'Your communication skills are at their peak.', 'Step into the spotlight — you are ready.'],
-  Luteal: ['Gentle productivity is still productivity.', 'Your intuition is strongest right now.', 'Rest without guilt. You have earned it.'],
+  Luteal: ['Gentle productivity is still productivity.', 'Rest without guilt. You have earned it.'],
   'Late Luteal': ['Your body knows what it needs. Listen.', 'Nourish yourself deeply today.', 'The cycle completes and renews.'],
 };
 
@@ -48,10 +48,14 @@ const getDailyQuote = (phase) => {
 };
 
 const getDateKey = (value) => {
-  if (!value) return '';
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return '';
-  return date.toISOString().split('T')[0];
+  return String(value || '').slice(0, 10);
+};
+
+const parsePlainDate = (value) => {
+  const text = String(value || '').slice(0, 10);
+  const match = text.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (!match) return null;
+  return new Date(Date.UTC(Number(match[1]), Number(match[2]) - 1, Number(match[3])));
 };
 
 const moodOptions = [
@@ -83,7 +87,8 @@ const exportPDF = (user, cycles, symptoms, prediction) => {
   doc.setTextColor(0, 0, 0);
   doc.text(`Total cycles logged: ${cycles.length}`, 20, 82);
   doc.text(`Average cycle length: ${prediction?.average_cycle_length || 'N/A'} days`, 20, 92);
-  doc.text(`Next period predicted: ${prediction?.next_period_predicted || 'N/A'}`, 20, 102);
+  doc.text(`Median cycle length: ${prediction?.median_cycle_length || 'N/A'} days`, 20, 102);
+  doc.text(`Next period range: ${prediction?.prediction_range_start || 'N/A'} to ${prediction?.prediction_range_end || 'N/A'}`, 20, 112);
   doc.text(`Ovulation date: ${prediction?.ovulation_date || 'N/A'}`, 20, 112);
   doc.text(`Fertile window: ${prediction?.fertile_window_start || 'N/A'} to ${prediction?.fertile_window_end || 'N/A'}`, 20, 122);
 
@@ -207,7 +212,8 @@ const formatDate = (value) => {
     return '—';
   }
 
-  return new Date(value).toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+  const date = parsePlainDate(value);
+  return date ? date.toLocaleDateString('en-US', { month: 'short', day: 'numeric', timeZone: 'UTC' }) : '—';
 };
 
 const getCycleDuration = (cycle) => {
@@ -215,8 +221,8 @@ const getCycleDuration = (cycle) => {
     return 0;
   }
 
-  const startDate = new Date(cycle.start_date);
-  const endDate = cycle.end_date ? new Date(cycle.end_date) : null;
+  const startDate = parsePlainDate(cycle.start_date);
+  const endDate = cycle.end_date ? parsePlainDate(cycle.end_date) : null;
 
   if (!endDate || Number.isNaN(endDate.getTime())) {
     return cycle.predicted_length || 5;
@@ -372,9 +378,9 @@ const Dashboard = () => {
         {
           label: 'Cycle duration',
           data: durations,
-          backgroundColor: '#5b6cff',
-          hoverBackgroundColor: '#4a5ae8',
-          borderRadius: 6,
+          backgroundColor: '#b84f6f',
+          hoverBackgroundColor: '#963d59',
+          borderRadius: 10,
           maxBarThickness: 48,
         },
       ],
@@ -393,7 +399,7 @@ const Dashboard = () => {
       datasets: [
         {
           data: Object.values(moodCounts),
-          backgroundColor: ['#5b6cff', '#ec4899', '#14b8a6', '#f59e0b', '#8b5cf6', '#ef4444'],
+          backgroundColor: ['#b84f6f', '#d87992', '#e7a0b2', '#8d5367', '#c18a9a', '#6f394e'],
           borderWidth: 0,
           hoverOffset: 8,
         },
@@ -428,7 +434,7 @@ const Dashboard = () => {
     {
       label: 'Logged cycles',
       value: cycles.length,
-      note: 'Covers every period event captured this month.',
+      note: 'All period events captured to date.',
       icon: '◔',
     },
     {
@@ -440,7 +446,9 @@ const Dashboard = () => {
     {
       label: 'Avg. cycle length',
       value: prediction?.average_cycle_length ? `${prediction.average_cycle_length} days` : 'N/A',
-      note: 'Model-based estimate from historical cycles.',
+      note: prediction?.median_cycle_length
+        ? `Median ${prediction.median_cycle_length} days across historical cycles.`
+        : 'Need at least two cycles for an estimate.',
       icon: '◉',
     },
     {
@@ -492,7 +500,7 @@ const Dashboard = () => {
     }
   }, [goalProgress]);
 
-  const currentCheckin = dailyCheckins[selectedDay] || { mood: 'calm', reflection: '' };
+  const currentCheckin = dailyCheckins[selectedDay] || { mood: '', reflection: '' };
 
   const moodCalendar = useMemo(() => {
     const days = [];
@@ -504,7 +512,7 @@ const Dashboard = () => {
       const key = getDateKey(date);
       const savedCheckin = dailyCheckins[key];
       const matchingEntry = symptoms.find((item) => getDateKey(item.date) === key);
-      const mood = savedCheckin?.mood || matchingEntry?.mood || 'calm';
+      const mood = savedCheckin?.mood || matchingEntry?.mood || '';
       days.push({
         key,
         label: date.toLocaleDateString('en-US', { weekday: 'short' }),
@@ -636,7 +644,11 @@ const Dashboard = () => {
           <div className="hero-art__content">
             <div className="hero-art__metric">
               <span className="helper-text">Next period prediction</span>
-              <strong>{prediction?.next_period_predicted || 'Updating soon'}</strong>
+              <strong>
+                {prediction?.prediction_range_start && prediction?.prediction_range_end
+                  ? `${prediction.prediction_range_start} - ${prediction.prediction_range_end}`
+                  : 'Not enough data yet'}
+              </strong>
             </div>
             <div className="hero-art__metric">
               <span className="helper-text">Fertile window</span>
@@ -683,9 +695,23 @@ const Dashboard = () => {
           ) : (
             <div className="chart-grid">
               <div className="chart-card">
+                <div className="chart-card__header">
+                  <div>
+                    <span className="chart-card__eyebrow">Cycle history</span>
+                    <h3 className="chart-card__title">Cycle duration</h3>
+                  </div>
+                  <span className="chart-card__unit">Days</span>
+                </div>
                 <Bar data={cycleChartData} options={chartOptions} />
               </div>
               <div className="chart-card">
+                <div className="chart-card__header">
+                  <div>
+                    <span className="chart-card__eyebrow">Wellbeing</span>
+                    <h3 className="chart-card__title">Mood distribution</h3>
+                  </div>
+                  <span className="chart-card__unit">Check-ins</span>
+                </div>
                 {moodChartData.labels.length > 1 ? (
                   <Doughnut
                     data={moodChartData}
@@ -724,14 +750,20 @@ const Dashboard = () => {
           <div className="mini-panel">
             <div className="mini-panel__icon">↗</div>
             <h3 className="quick-card__title">Forecast confidence</h3>
-            <p className="quick-card__copy">{prediction?.average_cycle_length ? 'Predictions are anchored to your recent cycle history.' : 'Continue logging cycles to unlock better forecast quality.'}</p>
+            <p className="quick-card__copy">
+              {prediction?.forecast_confidence
+                ? `Confidence: ${prediction.forecast_confidence}. Recent cycles vary from ${prediction.cycle_length_min} to ${prediction.cycle_length_max} days.`
+                : 'Continue logging cycles to unlock a forecast range.'}
+            </p>
           </div>
 
           <div className="mini-panel">
             <div className="mini-panel__icon">⌁</div>
             <h3 className="quick-card__title">Care signal</h3>
             <p className="quick-card__copy">
-              {averagePain > 6
+              {!symptoms.length
+                ? 'Not enough symptom data yet. Add check-ins to see a care signal.'
+                : averagePain > 6
                 ? 'Pain scores are trending higher than ideal. Review hydration, rest, and symptom patterns.'
                 : 'Your symptom intensity is currently within a manageable range.'}
             </p>
@@ -831,12 +863,12 @@ const Dashboard = () => {
                 >
                   <strong>{day.label.slice(0, 1)}</strong>
                   <span>{day.shortLabel}</span>
-                  <span>{moodOptions.find((option) => option.key === day.mood)?.icon || '🌿'}</span>
+                  <span>{moodOptions.find((option) => option.key === day.mood)?.icon || '—'}</span>
                 </button>
               ))}
             </div>
             <div className="wellness-card__copy">
-              {currentDayInsight ? `Showing ${currentDayInsight.shortLabel} — ${currentDayInsight.mood}` : 'No entries yet'}
+              {currentDayInsight?.mood ? `Showing ${currentDayInsight.shortLabel} — ${currentDayInsight.mood}` : 'Not enough data yet'}
             </div>
           </div>
         </div>
@@ -945,7 +977,9 @@ const Dashboard = () => {
               <div className="mini-panel">
                 <h3 className="quick-card__title">Prediction summary</h3>
                 <p className="quick-card__copy">
-                  Next period: <strong>{prediction?.next_period_predicted || 'Pending'}</strong>
+                  Next period range: <strong>{prediction?.prediction_range_start && prediction?.prediction_range_end
+                    ? `${prediction.prediction_range_start} to ${prediction.prediction_range_end}`
+                    : 'Not enough data'}</strong>
                   <br />
                   Ovulation: <strong>{prediction?.ovulation_date || 'Pending'}</strong>
                 </p>

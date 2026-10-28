@@ -12,8 +12,17 @@ const { searchYouTubeVideo } = require('../services/youtubeService');
 
 const genAI = process.env.GEMINI_API_KEY ? new GoogleGenerativeAI(process.env.GEMINI_API_KEY) : null;
 const MUSIC_KEYWORDS = ['play', 'song', 'music', 'listen', 'melody', 'playlist', 'audio'];
+const GEMINI_TIMEOUT_MS = Number(process.env.GEMINI_TIMEOUT_MS || 12000);
+const HEALTH_TERMS = ['period', 'menstrual', 'cycle', 'cramp', 'pain', 'bleeding', 'fertile', 'ovulat', 'pms', 'pcos', 'symptom', 'sleep', 'mood', 'nutrition', 'exercise', 'pregnan', 'doctor', 'health'];
+const replyCache = new Map();
 
 const isMusicRequest = (message) => MUSIC_KEYWORDS.some((keyword) => message.toLowerCase().includes(keyword));
+const isHealthQuestion = (message) => HEALTH_TERMS.some((term) => message.toLowerCase().includes(term));
+const selectRelevantMatches = (matches) => {
+  if (!matches.length) return [];
+  const bestScore = matches[0].score;
+  return matches.filter((match) => match.score >= bestScore - 0.12).slice(0, 2);
+};
 
 const buildFallbackReply = (message) => {
   const normalizedMessage = message.toLowerCase();
@@ -27,6 +36,49 @@ const buildFallbackReply = (message) => {
     return 'Fertile-window estimates vary and are not guaranteed contraception. Use cycle logs over multiple months and consult a healthcare professional for personal guidance.';
   }
   return `I am temporarily running in offline guidance mode. Keep tracking your cycle and symptoms, and consult a doctor for personal medical advice. ${MEDICAL_DISCLAIMER}`;
+};
+
+const buildRetrievedFallbackReply = (message, retrieved) => {
+  const source = retrieved[0];
+  const sentences = source.content.match(/[^.!?]+[.!?]+/g) || [source.content];
+  const terms = message
+    .toLowerCase()
+    .replace(/[^a-z0-9\s]/g, ' ')
+    .split(/\s+/)
+    .filter((term) => term.length > 2);
+  const asksForAction = /\b(help|relief|manage|reduce|improve|treat|ease|what can i do)\b/i.test(message);
+  const scoredSentences = sentences.map((sentence, index) => {
+    const normalizedSentence = sentence.toLowerCase();
+    const matches = terms.filter((term) => normalizedSentence.includes(term)).length;
+    return { sentence: sentence.trim(), score: matches, index };
+  });
+  const relevantSentences = scoredSentences
+    .filter((item) => item.score > 0)
+    .sort((left, right) => right.score - left.score || left.index - right.index)
+    .slice(0, asksForAction ? 1 : 3)
+    .map((item) => item.sentence);
+  const relevantText = (relevantSentences.length > 0 ? relevantSentences : sentences.slice(0, 2))
+    .join(' ')
+    .trim();
+
+  return `Based on the vetted source "${source.title}": ${relevantText} This is general educational information, not a diagnosis or treatment. Consult a qualified healthcare professional for personal advice.`;
+};
+
+const generateGeminiReply = async (model, prompt) => {
+  let timeoutId;
+  const timeout = new Promise((_, reject) => {
+    timeoutId = setTimeout(() => reject(new Error(`Gemini request timed out after ${GEMINI_TIMEOUT_MS}ms`)), GEMINI_TIMEOUT_MS);
+  });
+
+  try {
+    const result = await Promise.race([
+      model.generateContent(prompt),
+      timeout,
+    ]);
+    return result.response.text().trim();
+  } finally {
+    clearTimeout(timeoutId);
+  }
 };
 
 const getUserContext = async (userId) => {
@@ -46,6 +98,8 @@ const getUserContext = async (userId) => {
 };
 
 const saveChatTurn = async (userId, role, message) => {
+  let retrieved = [];
+
   try {
     await db.promise().query(
       'INSERT INTO chat_history (user_id, role, message) VALUES (?, ?, ?)',
@@ -89,6 +143,12 @@ const chat = async (req, res) => {
   }
 
   try {
+    if (!isHealthQuestion(message)) {
+      const reply = `I can help with menstrual health, cycle tracking, symptoms, and related wellness questions, but I can't answer unrelated topics. ${MEDICAL_DISCLAIMER}`;
+      await saveChatTurn(userId, 'assistant', reply);
+      return res.json(responsePayload({ reply, redFlags }));
+    }
+
     if (isMusicRequest(message)) {
       const videoResult = await searchYouTubeVideo(message);
       if (videoResult) {
@@ -99,36 +159,54 @@ const chat = async (req, res) => {
       }
     }
 
-    const retrieved = await searchKnowledgeBase({ query: message, topK: 4, threshold: 0.45 });
+    retrieved = await searchKnowledgeBase({ query: message, topK: 4, threshold: 0.45 });
     if (retrieved.length === 0) {
       const reply = noRelevantContextReply;
       await saveChatTurn(userId, 'assistant', reply);
       return res.json(responsePayload({ reply, redFlags }));
     }
 
-    const citations = retrieved.map(({ title, url, chunkId, score }) => ({ title, url, chunkId, score }));
+    const relevantMatches = selectRelevantMatches(retrieved);
+    const citations = relevantMatches.map(({ title, url, chunkId, score }) => ({ title, url, chunkId, score }));
+    const cacheKey = message.toLowerCase().replace(/\s+/g, ' ').trim();
+    const cached = replyCache.get(cacheKey);
+    if (cached && Date.now() - cached.createdAt < 10 * 60 * 1000) {
+      await saveChatTurn(userId, 'assistant', cached.reply);
+      return res.json(responsePayload({ reply: cached.reply, citations, redFlags, degraded: cached.degraded }));
+    }
     if (!genAI) {
-      const reply = `${buildFallbackReply(message)} ${medicalAlert(redFlags) || ''}`.trim();
+      const reply = `${buildRetrievedFallbackReply(message, retrieved)} ${medicalAlert(redFlags) || ''}`.trim();
+      replyCache.set(cacheKey, { reply, createdAt: Date.now(), degraded: true });
       await saveChatTurn(userId, 'assistant', reply);
       return res.json(responsePayload({ reply, citations, redFlags, degraded: true }));
     }
 
     const userContext = await getUserContext(userId);
-    const retrievedContext = retrieved
+    const retrievedContext = relevantMatches
       .map((item) => `[${item.title}] ${item.content}`)
       .join('\n\n');
     const prompt = buildRagPrompt({ question: message, retrievedContext, userContext });
-    const model = genAI.getGenerativeModel({ model: 'gemini-2.0-flash' });
-    const result = await model.generateContent(prompt);
-    const reply = result.response.text().trim();
+    const model = genAI.getGenerativeModel({
+      model: process.env.GEMINI_CHAT_MODEL || 'gemini-3.8-flash',
+    });
+    const reply = await generateGeminiReply(model, prompt);
+    replyCache.set(cacheKey, { reply, createdAt: Date.now(), degraded: false });
 
     await saveChatTurn(userId, 'assistant', reply);
     return res.json(responsePayload({ reply, citations, redFlags }));
   } catch (error) {
     console.error('RAG chat error:', error.message);
-    const reply = `${buildFallbackReply(message)} ${medicalAlert(redFlags) || ''}`.trim();
+    const citations = selectRelevantMatches(retrieved)
+      .map(({ title, url, chunkId, score }) => ({ title, url, chunkId, score }));
+    const reply = retrieved.length > 0
+      ? `${buildRetrievedFallbackReply(message, retrieved)} ${medicalAlert(redFlags) || ''}`.trim()
+      : `${buildFallbackReply(message)} ${medicalAlert(redFlags) || ''}`.trim();
+    if (retrieved.length > 0) {
+      const cacheKey = message.toLowerCase().replace(/\s+/g, ' ').trim();
+      replyCache.set(cacheKey, { reply, createdAt: Date.now(), degraded: true });
+    }
     await saveChatTurn(userId, 'assistant', reply);
-    return res.json(responsePayload({ reply, redFlags, degraded: true }));
+    return res.json(responsePayload({ reply, citations, redFlags, degraded: true }));
   }
 };
 

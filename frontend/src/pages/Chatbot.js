@@ -33,6 +33,21 @@ const STORAGE_KEY = 'wellness_chat_history';
 
 const formatTime = (date) => new Date(date).toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' });
 
+const renderRichText = (text) => String(text || '').split('\n').map((line, lineIndex) => (
+  <React.Fragment key={`line-${lineIndex}`}>
+    {lineIndex > 0 && <br />}
+    {line.split(/(\*\*[^*]+\*\*|\*[^*]+\*)/g).map((part, partIndex) => {
+      if (part.startsWith('**') && part.endsWith('**')) {
+        return <strong key={`part-${lineIndex}-${partIndex}`}>{part.slice(2, -2)}</strong>;
+      }
+      if (part.startsWith('*') && part.endsWith('*')) {
+        return <em key={`part-${lineIndex}-${partIndex}`}>{part.slice(1, -1)}</em>;
+      }
+      return part;
+    })}
+  </React.Fragment>
+));
+
 const Chatbot = () => {
   const { token } = useAuth();
   const { notify } = useUI();
@@ -266,7 +281,7 @@ const Chatbot = () => {
                   </div>
                 ) : (
                   <>
-                    {message.text}
+                    {renderRichText(message.text)}
                     {message.requiresMedicalCare && message.safetyAlert && (
                       <div
                         role="alert"
@@ -292,10 +307,7 @@ const Chatbot = () => {
                 )}
               </div>
               {message.role === 'bot' && message.citations?.length > 0 && (
-                <div
-                  aria-label="Sources"
-                  style={{ display: 'flex', flexWrap: 'wrap', gap: '6px', marginTop: '8px', paddingLeft: '4px' }}
-                >
+                <div className="chat-citations" aria-label="Sources">
                   {message.citations.map((citation) => (
                     <a
                       key={`${citation.url}-${citation.chunkId}`}
@@ -312,15 +324,14 @@ const Chatbot = () => {
               )}
 
               {/* Timestamp + Copy */}
-              <div style={{
-                display: 'flex',
-                justifyContent: message.role === 'user' ? 'flex-end' : 'flex-start',
-                alignItems: 'center',
-                gap: '8px',
-                marginTop: '4px',
-                paddingLeft: message.role === 'user' ? 0 : '4px',
-                paddingRight: message.role === 'user' ? '4px' : 0,
-              }}>
+              <div
+                className="chat-message-meta"
+                style={{
+                  justifyContent: message.role === 'user' ? 'flex-end' : 'flex-start',
+                  paddingLeft: message.role === 'user' ? 0 : '4px',
+                  paddingRight: message.role === 'user' ? '4px' : 0,
+                }}
+              >
                 <span style={{ fontSize: '10px', color: 'var(--text-muted)' }}>
                   {message.timestamp ? formatTime(message.timestamp) : ''}
                 </span>

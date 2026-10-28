@@ -28,7 +28,11 @@ const initialForm = {
 
 const commonSymptomTags = ['Cramps', 'Bloating', 'Headache', 'Nausea', 'Fatigue', 'Backache', 'Stomach pain', 'Breast tenderness'];
 
-const formatDate = (value) => (value ? new Date(value).toLocaleDateString('en-US', { month: 'short', day: 'numeric' }) : '—');
+const formatDate = (value) => {
+  const text = String(value || '').slice(0, 10);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(text)) return '—';
+  return new Date(`${text}T00:00:00Z`).toLocaleDateString('en-US', { month: 'short', day: 'numeric', timeZone: 'UTC' });
+};
 
 const toDateInputValue = (value) => {
   if (!value) return '';
@@ -452,8 +456,42 @@ const Symptoms = () => {
             <div className="chart-card skeleton skeleton--card" />
           ) : (
             <div className="chart-grid">
-              <div className="chart-card interactive-card"><Bar data={moodChartData} options={moodChartOptions} /></div>
-              <div className="chart-card interactive-card"><Line data={painChartData} options={painChartOptions} /></div>
+              <div className="chart-card interactive-card">
+                <div className="chart-card__header">
+                  <div>
+                    <span className="chart-card__eyebrow">Wellbeing</span>
+                    <h3 className="chart-card__title">Mood frequency</h3>
+                  </div>
+                  <span className="chart-card__unit">Entries</span>
+                </div>
+                {analytics.length > 0 ? (
+                  <Bar data={moodChartData} options={moodChartOptions} />
+                ) : (
+                  <div className="chart-empty-state">
+                    <div className="chart-empty-state__icon">◌</div>
+                    <strong>No mood data yet</strong>
+                    <p>Log a symptom check-in with a mood to see your distribution.</p>
+                  </div>
+                )}
+              </div>
+              <div className="chart-card interactive-card">
+                <div className="chart-card__header">
+                  <div>
+                    <span className="chart-card__eyebrow">Comfort</span>
+                    <h3 className="chart-card__title">Pain trend</h3>
+                  </div>
+                  <span className="chart-card__unit">Last 6 logs</span>
+                </div>
+                {symptomsList.length > 0 ? (
+                  <Line data={painChartData} options={painChartOptions} />
+                ) : (
+                  <div className="chart-empty-state">
+                    <div className="chart-empty-state__icon">⌁</div>
+                    <strong>No pain trend yet</strong>
+                    <p>Your pain pattern will appear here after your first check-in.</p>
+                  </div>
+                )}
+              </div>
             </div>
           )}
         </article>
@@ -698,7 +736,7 @@ const Symptoms = () => {
         <div className="section-card__header">
           <div>
             <h2 className="section-card__title">🥗 Nutrition & Wellness Tips</h2>
-            <p className="section-card__subtitle">Evidence-based food and lifestyle recommendations for each cycle phase.</p>
+            <p className="section-card__subtitle">General food and lifestyle ideas for each cycle phase.</p>
           </div>
         </div>
         <div className="section-grid">
