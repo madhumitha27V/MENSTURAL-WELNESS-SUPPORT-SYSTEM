@@ -1,95 +1,134 @@
 const { GoogleGenerativeAI } = require('@google/generative-ai');
 const db = require('../config/db');
+const { searchKnowledgeBase } = require('../rag/retrieve');
+const { buildRagPrompt, noRelevantContextReply, MEDICAL_DISCLAIMER } = require('../rag/prompts');
+const {
+  sanitizeMessage,
+  detectRedFlags,
+  isPromptInjection,
+  medicalAlert,
+} = require('../services/safetyService');
+const { searchYouTubeVideo } = require('../services/youtubeService');
 
 const genAI = process.env.GEMINI_API_KEY ? new GoogleGenerativeAI(process.env.GEMINI_API_KEY) : null;
+const MUSIC_KEYWORDS = ['play', 'song', 'music', 'listen', 'melody', 'playlist', 'audio'];
+
+const isMusicRequest = (message) => MUSIC_KEYWORDS.some((keyword) => message.toLowerCase().includes(keyword));
 
 const buildFallbackReply = (message) => {
-  const normalizedMessage = String(message || '').toLowerCase();
-
+  const normalizedMessage = message.toLowerCase();
   if (normalizedMessage.includes('cramp') || normalizedMessage.includes('pain')) {
-    return 'For cramp relief, try hydration, gentle heat, and light stretching. If pain is severe, worsening, or affecting daily life, please consult a doctor.';
+    return 'For mild cramp relief, try hydration, gentle heat, and light stretching. If pain is severe, worsening, or affecting daily life, please consult a doctor.';
   }
-
   if (normalizedMessage.includes('irregular') || normalizedMessage.includes('late') || normalizedMessage.includes('missed')) {
-    return 'Cycle variation can happen due to stress, sleep, diet, or hormonal changes. Keep tracking your dates for 2-3 cycles and consult a doctor if irregularity continues.';
+    return 'Cycle variation can happen for many reasons. Keep tracking your dates for 2-3 cycles and consult a doctor if irregularity continues.';
   }
-
   if (normalizedMessage.includes('fertile') || normalizedMessage.includes('ovulation')) {
-    return 'Your fertile window is usually around ovulation, often about 14 days before the next period. Use cycle logs over multiple months for better accuracy.';
+    return 'Fertile-window estimates vary and are not guaranteed contraception. Use cycle logs over multiple months and consult a healthcare professional for personal guidance.';
   }
-
-  return 'I am temporarily running in offline guidance mode. Keep tracking your cycle, symptoms, sleep, and hydration daily, and please consult a doctor for medical advice or persistent concerns.';
+  return `I am temporarily running in offline guidance mode. Keep tracking your cycle and symptoms, and consult a doctor for personal medical advice. ${MEDICAL_DISCLAIMER}`;
 };
 
-const chat = async (req, res) => {
-  const { message } = req.body;
-  const user_id = req.user.id;
+const getUserContext = async (userId) => {
+  const query = db.promise().query.bind(db.promise());
+  const [cycleRows] = await query(
+    `SELECT start_date, end_date, flow_intensity
+     FROM cycles WHERE user_id = ? ORDER BY start_date DESC LIMIT 3`,
+    [userId],
+  );
+  const [symptomRows] = await query(
+    `SELECT date, mood, pain_level, symptoms, water_intake, sleep_hours
+     FROM symptoms WHERE user_id = ? ORDER BY date DESC LIMIT 5`,
+    [userId],
+  );
 
-  if (!message) {
-    return res.status(400).json({ message: 'Message is required' });
+  return JSON.stringify({ cycles: cycleRows, symptoms: symptomRows });
+};
+
+const saveChatTurn = async (userId, role, message) => {
+  try {
+    await db.promise().query(
+      'INSERT INTO chat_history (user_id, role, message) VALUES (?, ?, ?)',
+      [userId, role, message],
+    );
+  } catch (error) {
+    console.error('Unable to save chat history:', error.message);
   }
+};
 
-  if (!genAI) {
-    return res.status(200).json({
-      message: 'AI service is not configured',
-      reply: buildFallbackReply(message),
-      degraded: true,
-    });
+const responsePayload = ({ reply, citations = [], redFlags = [], degraded = false }) => ({
+  type: 'text',
+  message: reply,
+  reply,
+  citations: citations.map((citation) => ({
+    title: citation.title,
+    url: citation.url,
+    chunkId: citation.chunkId,
+    score: Number(citation.score.toFixed(3)),
+  })),
+  safetyAlert: medicalAlert(redFlags),
+  requiresMedicalCare: redFlags.length > 0,
+  degraded,
+  disclaimer: MEDICAL_DISCLAIMER,
+});
+
+const chat = async (req, res) => {
+  const message = sanitizeMessage(req.body?.message);
+  const userId = req.user.id;
+
+  if (!message) return res.status(400).json({ message: 'Message is required' });
+  if (message.length < 2) return res.status(400).json({ message: 'Message is too short' });
+
+  const redFlags = detectRedFlags(message);
+  await saveChatTurn(userId, 'user', message);
+
+  if (isPromptInjection(message)) {
+    const reply = `I can help with menstrual wellness education, but I can't follow requests to override my safety instructions or reveal hidden instructions. ${MEDICAL_DISCLAIMER}`;
+    await saveChatTurn(userId, 'assistant', reply);
+    return res.json(responsePayload({ reply, redFlags }));
   }
 
   try {
-    const query = db.promise().query.bind(db.promise());
-
-    const [cycleRows] = await query(
-      'SELECT * FROM cycles WHERE user_id = ? ORDER BY start_date DESC LIMIT 3',
-      [user_id],
-    );
-
-    const [symptomRows] = await query(
-      'SELECT * FROM symptoms WHERE user_id = ? ORDER BY date DESC LIMIT 5',
-      [user_id]
-    );
-
-    const cycleContext = cycleRows.length > 0
-      ? `User's recent cycles: ${JSON.stringify(cycleRows)}`
-      : 'No cycle data available yet';
-
-    const symptomContext = symptomRows.length > 0
-      ? `User's recent symptoms: ${JSON.stringify(symptomRows)}`
-      : 'No symptom data available yet';
-
-    const prompt = `You are a helpful and empathetic menstrual health assistant.
-Answer the user's question in a friendly and supportive way.
-Keep responses concise and easy to understand.
-
-${cycleContext}
-${symptomContext}
-
-User question: ${message}
-
-Provide a helpful personalised response based on their data if relevant.
-Always remind them to consult a doctor for medical advice.`;
-
-    const model = genAI.getGenerativeModel({ model: 'gemini-2.0-flash' });
-    const result = await model.generateContent(prompt);
-    const response = result.response.text();
-
-    res.json({ reply: response });
-  } catch (error) {
-    console.error('Gemini error:', error.message);
-    if (error.status === 429) {
-      return res.status(200).json({ 
-        message: 'AI service is busy. Please try again in a minute.',
-        reply: buildFallbackReply(message),
-        degraded: true,
-      });
+    if (isMusicRequest(message)) {
+      const videoResult = await searchYouTubeVideo(message);
+      if (videoResult) {
+        const reply = `Playing ${videoResult.title} from ${videoResult.channel}.`;
+        await saveChatTurn(userId, 'assistant', reply);
+        const { type, ...chatMetadata } = responsePayload({ reply, redFlags });
+        return res.json({ ...chatMetadata, type: 'youtube', message: reply, reply, ...videoResult });
+      }
     }
 
-    res.status(200).json({
-      message: 'AI service error',
-      reply: buildFallbackReply(message),
-      degraded: true,
-    });
+    const retrieved = await searchKnowledgeBase({ query: message, topK: 4, threshold: 0.45 });
+    if (retrieved.length === 0) {
+      const reply = noRelevantContextReply;
+      await saveChatTurn(userId, 'assistant', reply);
+      return res.json(responsePayload({ reply, redFlags }));
+    }
+
+    const citations = retrieved.map(({ title, url, chunkId, score }) => ({ title, url, chunkId, score }));
+    if (!genAI) {
+      const reply = `${buildFallbackReply(message)} ${medicalAlert(redFlags) || ''}`.trim();
+      await saveChatTurn(userId, 'assistant', reply);
+      return res.json(responsePayload({ reply, citations, redFlags, degraded: true }));
+    }
+
+    const userContext = await getUserContext(userId);
+    const retrievedContext = retrieved
+      .map((item) => `[${item.title}] ${item.content}`)
+      .join('\n\n');
+    const prompt = buildRagPrompt({ question: message, retrievedContext, userContext });
+    const model = genAI.getGenerativeModel({ model: 'gemini-2.0-flash' });
+    const result = await model.generateContent(prompt);
+    const reply = result.response.text().trim();
+
+    await saveChatTurn(userId, 'assistant', reply);
+    return res.json(responsePayload({ reply, citations, redFlags }));
+  } catch (error) {
+    console.error('RAG chat error:', error.message);
+    const reply = `${buildFallbackReply(message)} ${medicalAlert(redFlags) || ''}`.trim();
+    await saveChatTurn(userId, 'assistant', reply);
+    return res.json(responsePayload({ reply, redFlags, degraded: true }));
   }
 };
 

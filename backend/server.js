@@ -5,6 +5,9 @@ const db = require('./config/db');
 const authRoutes = require('./routes/authRoutes');
 const cycleRoutes = require('./routes/cycleRoutes');
 const symptomRoutes = require('./routes/symptomRoutes');
+const analyticsRoutes = require('./routes/analyticsRoutes');
+const forecastRoutes = require('./routes/forecastRoutes');
+const ragRoutes = require('./routes/ragRoutes');
 const chatRoutes = require('./routes/chatRoutes');
 const { getHealthStatus } = require('./controllers/healthController');
 
@@ -24,8 +27,12 @@ app.get('/api/health', getHealthStatus);
 
 app.use('/api/auth', authRoutes);
 app.use('/api/cycle', cycleRoutes);
+app.use('/api/cycles', cycleRoutes);
 app.use('/api/symptoms', symptomRoutes);
+app.use('/api/analytics', analyticsRoutes);
+app.use('/api/forecast', forecastRoutes);
 app.use('/api/chat', chatRoutes);
+app.use('/api/rag', ragRoutes);
 
 app.use((req, res) => {
   res.status(404).json({ message: 'Route not found' });

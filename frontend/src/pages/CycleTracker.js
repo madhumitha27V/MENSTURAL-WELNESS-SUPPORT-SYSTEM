@@ -1,4 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import Calendar from 'react-calendar';
+import 'react-calendar/dist/Calendar.css';
 import { useAuth } from '../context/AuthContext';
 import { useUI } from '../context/UiContext';
 import api, { getApiErrorMessage, getAuthConfig } from '../lib/api';
@@ -18,6 +20,26 @@ const flowLabels = {
   heavy: 'Heavy',
 };
 
+const formatDate = (date) => {
+  if (!date) return '';
+  const day = String(date.getDate()).padStart(2, '0');
+  const month = String(date.getMonth() + 1).padStart(2, '0');
+  const year = date.getFullYear();
+  return `${day}-${month}-${year}`;
+};
+
+const getIsoDateString = (date) => {
+  if (!date) return '';
+  return date.toISOString().split('T')[0];
+};
+
+const parseDate = (value) => {
+  if (!value) return null;
+  const [day, month, year] = value.split('-');
+  const parsed = new Date(`${year}-${month}-${day}`);
+  return Number.isNaN(parsed.getTime()) ? null : parsed;
+};
+
 const CycleTracker = () => {
   const { token } = useAuth();
   const { notify } = useUI();
@@ -29,6 +51,7 @@ const CycleTracker = () => {
   const [confirmOpen, setConfirmOpen] = useState(false);
   const [search, setSearch] = useState('');
   const [filter, setFilter] = useState('all');
+  const [dateRange, setDateRange] = useState([null, null]);
 
   const fetchCycles = useCallback(async () => {
     setLoading(true);
@@ -52,8 +75,19 @@ const CycleTracker = () => {
     setForm((currentForm) => ({ ...currentForm, [field]: value }));
   };
 
+  const setRangeFromCalendar = (value) => {
+    const [start, end] = Array.isArray(value) ? value : [value, value];
+    setDateRange([start, end]);
+    setForm((currentForm) => ({
+      ...currentForm,
+      start_date: formatDate(start),
+      end_date: end ? formatDate(end) : '',
+    }));
+  };
+
   const resetForm = () => {
     setForm(initialForm);
+    setDateRange([null, null]);
     setStep(1);
     setConfirmOpen(false);
   };
@@ -72,6 +106,23 @@ const CycleTracker = () => {
       setSaving(false);
     }
   };
+
+  const loggedStartDates = useMemo(() => {
+    const now = new Date();
+    const sixMonthsAgo = new Date(now.getFullYear(), now.getMonth() - 6, now.getDate());
+
+    return new Set(
+      cycles
+        .map((cycle) => {
+          if (!cycle.start_date) return '';
+          const parsed = new Date(cycle.start_date);
+          if (Number.isNaN(parsed.getTime())) return '';
+          if (parsed < sixMonthsAgo) return '';
+          return getIsoDateString(parsed);
+        })
+        .filter(Boolean)
+    );
+  }, [cycles]);
 
   const filteredCycles = useMemo(() => {
     const query = search.trim().toLowerCase();
@@ -153,16 +204,49 @@ const CycleTracker = () => {
 
         <div className="form-grid">
           {step === 1 && (
-            <>
+            <div className="calendar-panel" style={{ gridColumn: '1 / -1' }}>
               <div className="field">
-                <label className="field__label" htmlFor="start_date">Start date</label>
-                <input id="start_date" type="date" className="field__input" value={form.start_date} onChange={(event) => updateField('start_date', event.target.value)} />
+                <label className="field__label" htmlFor="calendar">Cycle range</label>
+                <Calendar
+                  id="calendar"
+                  className="cycle-calendar"
+                  selectRange
+                  value={dateRange}
+                  onChange={setRangeFromCalendar}
+                  minDetail="month"
+                  maxDetail="month"
+                  prevLabel="‹"
+                  nextLabel="›"
+                  tileClassName={({ date, view }) => {
+                    if (view !== 'month') return null;
+
+                    const iso = getIsoDateString(new Date(date));
+                    if (dateRange[0]) {
+                      const start = new Date(dateRange[0]).setHours(0, 0, 0, 0);
+                      const current = new Date(date).setHours(0, 0, 0, 0);
+                      if (current === start) return 'calendar__tile--selected-start';
+                    }
+
+                    if (loggedStartDates.has(iso)) {
+                      return 'calendar__tile--logged-start';
+                    }
+
+                    return null;
+                  }}
+                />
+                <p className="field__hint">Tap the calendar to select your cycle start and end dates.</p>
               </div>
-              <div className="field">
-                <label className="field__label" htmlFor="end_date">End date</label>
-                <input id="end_date" type="date" className="field__input" value={form.end_date} onChange={(event) => updateField('end_date', event.target.value)} />
+              <div className="calendar-summary">
+                <div className="summary-card">
+                  <span>Selected start</span>
+                  <strong>{form.start_date || 'Choose a date'}</strong>
+                </div>
+                <div className="summary-card">
+                  <span>Selected end</span>
+                  <strong>{form.end_date || 'Ongoing'}</strong>
+                </div>
               </div>
-            </>
+            </div>
           )}
 
           {step === 2 && (

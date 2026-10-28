@@ -1,11 +1,206 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
-import { Line, Doughnut } from 'react-chartjs-2';
-import { Chart as ChartJS, ArcElement, CategoryScale, Legend, LinearScale, LineElement, PointElement, Tooltip, Filler } from 'chart.js';
+import { Bar, Doughnut } from 'react-chartjs-2';
+import { Chart as ChartJS, ArcElement, BarElement, CategoryScale, Legend, LinearScale, Tooltip } from 'chart.js';
 import { useAuth } from '../context/AuthContext';
 import api, { getAuthConfig } from '../lib/api';
+// Add these imports at the top of Dashboard.js
+import confetti from 'canvas-confetti';
+import jsPDF from 'jspdf';
 
-ChartJS.register(ArcElement, CategoryScale, Legend, LinearScale, LineElement, PointElement, Tooltip, Filler);
+// Cycle phase calculator
+const getCyclePhase = (lastPeriodDate, avgCycleLength = 28) => {
+  if (!lastPeriodDate) return null;
+  const today = new Date();
+  const last = new Date(lastPeriodDate);
+  const dayOfCycle = Math.floor((today - last) / (1000 * 60 * 60 * 24)) + 1;
+
+  if (dayOfCycle <= 5) return { phase: 'Menstrual', day: dayOfCycle, color: '#ef4444', emoji: '🩸', tip: 'Rest, stay warm, and hydrate well today.' };
+  if (dayOfCycle <= 13) return { phase: 'Follicular', day: dayOfCycle, color: '#8b5cf6', emoji: '🌱', tip: 'Energy is rising — great time to start new things!' };
+  if (dayOfCycle <= 16) return { phase: 'Ovulation', day: dayOfCycle, color: '#ec4899', emoji: '✨', tip: 'Peak energy and confidence. You are unstoppable today!' };
+  if (dayOfCycle <= avgCycleLength) return { phase: 'Luteal', day: dayOfCycle, color: '#f59e0b', emoji: '🌙', tip: 'Wind down, journal, and be gentle with yourself.' };
+  return { phase: 'Late Luteal', day: dayOfCycle, color: '#6366f1', emoji: '💜', tip: 'Period may be approaching. Rest and prepare.' };
+};
+
+// Days until next period
+const getDaysUntil = (nextPeriodDate) => {
+  if (!nextPeriodDate) return null;
+  const today = new Date();
+  const next = new Date(nextPeriodDate);
+  const diff = Math.ceil((next - today) / (1000 * 60 * 60 * 24));
+  return diff;
+};
+
+// Daily motivational quotes by phase
+const phaseQuotes = {
+  Menstrual: ['Your body is doing something incredible. Rest is productive.', 'Honour your need for slowness today.', 'Healing is happening right now.'],
+  Follicular: ['New beginnings are your superpower this week.', 'Your clarity and creativity are peaking.', 'This is your fresh start energy.'],
+  Ovulation: ['You are magnetic and powerful today.', 'Your communication skills are at their peak.', 'Step into the spotlight — you are ready.'],
+  Luteal: ['Gentle productivity is still productivity.', 'Your intuition is strongest right now.', 'Rest without guilt. You have earned it.'],
+  'Late Luteal': ['Your body knows what it needs. Listen.', 'Nourish yourself deeply today.', 'The cycle completes and renews.'],
+};
+
+const getDailyQuote = (phase) => {
+  if (!phase) return 'Track your cycle to unlock personalised daily guidance.';
+  const quotes = phaseQuotes[phase] || phaseQuotes.Luteal;
+  const index = new Date().getDate() % quotes.length;
+  return quotes[index];
+};
+
+const getDateKey = (value) => {
+  if (!value) return '';
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return '';
+  return date.toISOString().split('T')[0];
+};
+
+const moodOptions = [
+  { key: 'calm', label: 'Calm', icon: '🌿' },
+  { key: 'energized', label: 'Energized', icon: '⚡' },
+  { key: 'reflective', label: 'Reflective', icon: '🫶' },
+  { key: 'restful', label: 'Restful', icon: '☁️' },
+  { key: 'focused', label: 'Focused', icon: '✨' },
+  { key: 'uplifted', label: 'Uplifted', icon: '🌈' },
+];
+
+// PDF Export
+const exportPDF = (user, cycles, symptoms, prediction) => {
+  const doc = new jsPDF();
+  doc.setFontSize(20);
+  doc.setTextColor(91, 108, 255);
+  doc.text('Menstrual Wellness Report', 20, 25);
+
+  doc.setFontSize(12);
+  doc.setTextColor(0, 0, 0);
+  doc.text(`Name: ${user?.name || 'User'}`, 20, 40);
+  doc.text(`Generated: ${new Date().toLocaleDateString()}`, 20, 50);
+
+  doc.setFontSize(14);
+  doc.setTextColor(91, 108, 255);
+  doc.text('Cycle Summary', 20, 70);
+
+  doc.setFontSize(11);
+  doc.setTextColor(0, 0, 0);
+  doc.text(`Total cycles logged: ${cycles.length}`, 20, 82);
+  doc.text(`Average cycle length: ${prediction?.average_cycle_length || 'N/A'} days`, 20, 92);
+  doc.text(`Next period predicted: ${prediction?.next_period_predicted || 'N/A'}`, 20, 102);
+  doc.text(`Ovulation date: ${prediction?.ovulation_date || 'N/A'}`, 20, 112);
+  doc.text(`Fertile window: ${prediction?.fertile_window_start || 'N/A'} to ${prediction?.fertile_window_end || 'N/A'}`, 20, 122);
+
+  doc.setFontSize(14);
+  doc.setTextColor(91, 108, 255);
+  doc.text('Symptom Summary', 20, 142);
+
+  doc.setFontSize(11);
+  doc.setTextColor(0, 0, 0);
+  doc.text(`Total symptom logs: ${symptoms.length}`, 20, 154);
+
+  if (symptoms.length > 0) {
+    const avgPain = (symptoms.reduce((sum, s) => sum + Number(s.pain_level || 0), 0) / symptoms.length).toFixed(1);
+    const avgWater = (symptoms.reduce((sum, s) => sum + Number(s.water_intake || 0), 0) / symptoms.length).toFixed(1);
+    const avgSleep = (symptoms.reduce((sum, s) => sum + Number(s.sleep_hours || 0), 0) / symptoms.length).toFixed(1);
+    doc.text(`Average pain level: ${avgPain}/10`, 20, 164);
+    doc.text(`Average water intake: ${avgWater}L`, 20, 174);
+    doc.text(`Average sleep: ${avgSleep} hours`, 20, 184);
+  }
+
+  doc.setFontSize(14);
+  doc.setTextColor(91, 108, 255);
+  doc.text('Recent Cycles', 20, 204);
+
+  doc.setFontSize(10);
+  doc.setTextColor(0, 0, 0);
+  cycles.slice(0, 5).forEach((cycle, index) => {
+    doc.text(
+      `${index + 1}. ${cycle.start_date?.split('T')[0]} → ${cycle.end_date?.split('T')[0] || 'Ongoing'} | Flow: ${cycle.flow_intensity}`,
+      20,
+      216 + index * 12
+    );
+  });
+
+  doc.setFontSize(9);
+  doc.setTextColor(150, 150, 150);
+  doc.text('Generated by Menstrual Wellness OS', 20, 280);
+
+  doc.save(`wellness-report-${new Date().toISOString().split('T')[0]}.pdf`);
+};
+
+// Big segmented cycle ring — hero visual (period / follicular / ovulation / luteal arcs)
+const CycleHeroRing = ({ cyclePhase, avgCycleLength, daysUntil }) => {
+  const size = 220;
+  const strokeWidth = 16;
+  const radius = (size - strokeWidth) / 2;
+  const circumference = 2 * Math.PI * radius;
+  const total = avgCycleLength || 28;
+
+  const ovulationDays = 3;
+  const menstrualDays = 5;
+  const follicularDays = Math.max(1, 13 - menstrualDays);
+  const lutealDays = Math.max(1, total - menstrualDays - follicularDays - ovulationDays);
+
+  const segments = [
+    { phase: 'Menstrual', days: menstrualDays, color: '#ef4444' },
+    { phase: 'Follicular', days: follicularDays, color: '#8b5cf6' },
+    { phase: 'Ovulation', days: ovulationDays, color: '#ec4899' },
+    { phase: 'Luteal', days: lutealDays, color: '#f59e0b' },
+  ];
+
+  let cumulativeBefore = 0;
+  const arcs = segments.map((seg) => {
+    const segLength = (seg.days / total) * circumference;
+    const dashoffset = -((cumulativeBefore / total) * circumference);
+    cumulativeBefore += seg.days;
+    return { ...seg, segLength, dashoffset };
+  });
+
+  const currentDay = cyclePhase?.day || 0;
+  const dayFraction = total > 0 ? Math.min(1, Math.max(0, currentDay / total)) : 0;
+  const markerAngleDeg = dayFraction * 360 - 90;
+  const markerAngleRad = (markerAngleDeg * Math.PI) / 180;
+  const markerX = size / 2 + radius * Math.cos(markerAngleRad);
+  const markerY = size / 2 + radius * Math.sin(markerAngleRad);
+
+  return (
+    <div style={{ position: 'relative', width: size, height: size, margin: '0 auto', flexShrink: 0 }}>
+      <svg width={size} height={size} viewBox={`0 0 ${size} ${size}`}>
+        <circle cx={size / 2} cy={size / 2} r={radius} fill="none" stroke="var(--surface-raised)" strokeWidth={strokeWidth} />
+        <g transform={`rotate(-90 ${size / 2} ${size / 2})`}>
+          {arcs.map((arc) => (
+            <circle
+              key={arc.phase}
+              cx={size / 2}
+              cy={size / 2}
+              r={radius}
+              fill="none"
+              stroke={arc.color}
+              strokeWidth={strokeWidth}
+              strokeDasharray={`${arc.segLength} ${circumference - arc.segLength}`}
+              strokeDashoffset={arc.dashoffset}
+            />
+          ))}
+        </g>
+        {cyclePhase && (
+          <circle cx={markerX} cy={markerY} r={9} fill="#fff" stroke={cyclePhase.color} strokeWidth={4} />
+        )}
+      </svg>
+      <div style={{ position: 'absolute', inset: 0, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', textAlign: 'center' }}>
+        <div style={{ fontSize: '12px', fontWeight: 600, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
+          {cyclePhase ? cyclePhase.phase : 'Cycle'}
+        </div>
+        <div style={{ fontSize: '38px', fontWeight: 700, color: 'var(--text-heading)', lineHeight: 1.1, marginTop: '4px' }}>
+          {cyclePhase ? `Day ${cyclePhase.day}` : '—'}
+        </div>
+        <div style={{ fontSize: '13px', color: 'var(--text-muted)', marginTop: '6px', maxWidth: '150px' }}>
+          {daysUntil !== null
+            ? (daysUntil <= 0 ? 'Period expected today' : `Period in ${daysUntil} day${daysUntil === 1 ? '' : 's'}`)
+            : 'Log a cycle to begin tracking'}
+        </div>
+      </div>
+    </div>
+  );
+};
+
+ChartJS.register(ArcElement, BarElement, CategoryScale, Legend, LinearScale, Tooltip);
 
 const formatDate = (value) => {
   if (!value) {
@@ -39,6 +234,48 @@ const Dashboard = () => {
   const [search, setSearch] = useState('');
   const [filter, setFilter] = useState('all');
   const [insightsOpen, setInsightsOpen] = useState(false);
+  const [dailyCheckins, setDailyCheckins] = useState(() => {
+    if (typeof window === 'undefined') return {};
+    try {
+      const saved = localStorage.getItem('wellness_checkins');
+      return saved ? JSON.parse(saved) : {};
+    } catch {
+      return {};
+    }
+  });
+  const [selectedDay, setSelectedDay] = useState(() => {
+    if (typeof window === 'undefined') return new Date().toISOString().split('T')[0];
+    try {
+      return localStorage.getItem('wellness_selected_day') || new Date().toISOString().split('T')[0];
+    } catch {
+      return new Date().toISOString().split('T')[0];
+    }
+  });
+  const defaultWeeklyGoals = { hydration: false, rest: false, movement: false, journal: false };
+
+  const getWeekKey = (value = new Date()) => {
+    const date = new Date(value);
+    const year = date.getFullYear();
+    const firstDayOfYear = new Date(year, 0, 1);
+    const pastDays = Math.floor((date - firstDayOfYear) / (1000 * 60 * 60 * 24));
+    const weekNumber = Math.ceil((pastDays + firstDayOfYear.getDay() + 1) / 7);
+    return `${year}-W${String(weekNumber).padStart(2, '0')}`;
+  };
+
+  const [weeklyWellnessGoals, setWeeklyWellnessGoals] = useState(() => {
+    if (typeof window === 'undefined') return {};
+    try {
+      const saved = localStorage.getItem('wellness_goals_weekly');
+      return saved ? JSON.parse(saved) : {};
+    } catch {
+      return {};
+    }
+  });
+
+  const [currentWeekKey] = useState(() => getWeekKey());
+  const currentWeekLabel = `Week ${currentWeekKey.split('-W')[1] || '01'}`;
+
+  const wellnessGoals = weeklyWellnessGoals[currentWeekKey] || defaultWeeklyGoals;
 
   const fetchData = useCallback(async () => {
     setLoading(true);
@@ -64,6 +301,23 @@ const Dashboard = () => {
   useEffect(() => {
     fetchData();
   }, [fetchData]);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem('wellness_goals_weekly', JSON.stringify(weeklyWellnessGoals));
+    } catch {
+      // ignore storage errors
+    }
+  }, [weeklyWellnessGoals]);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem('wellness_checkins', JSON.stringify(dailyCheckins));
+      localStorage.setItem('wellness_selected_day', selectedDay);
+    } catch {
+      // ignore storage errors
+    }
+  }, [dailyCheckins, selectedDay]);
 
   const averagePain = useMemo(() => {
     if (!symptoms.length) {
@@ -118,12 +372,10 @@ const Dashboard = () => {
         {
           label: 'Cycle duration',
           data: durations,
-          borderColor: '#5b6cff',
-          backgroundColor: 'rgba(91, 108, 255, 0.16)',
-          fill: true,
-          tension: 0.45,
-          pointRadius: 4,
-          pointHoverRadius: 7,
+          backgroundColor: '#5b6cff',
+          hoverBackgroundColor: '#4a5ae8',
+          borderRadius: 6,
+          maxBarThickness: 48,
         },
       ],
     };
@@ -199,8 +451,159 @@ const Dashboard = () => {
     },
   ];
 
+  // Cycle phase + countdown + daily quote
+  const cyclePhase = useMemo(() => {
+    if (!cycles.length) return null;
+    return getCyclePhase(cycles[0]?.start_date, prediction?.average_cycle_length);
+  }, [cycles, prediction]);
+
+  const daysUntil = useMemo(() => getDaysUntil(prediction?.next_period_predicted), [prediction]);
+  const dailyQuote = useMemo(() => getDailyQuote(cyclePhase?.phase), [cyclePhase]);
+
+  const wellnessGoalList = useMemo(() => [
+    { key: 'hydration', label: 'Hydration reset', hint: 'Sip water regularly', icon: '💧' },
+    { key: 'rest', label: 'Rest first', hint: 'Let your body recover', icon: '🛏️' },
+    { key: 'movement', label: 'Gentle movement', hint: 'Walk or stretch', icon: '🪷' },
+    { key: 'journal', label: 'Mood check-in', hint: 'Note how you feel', icon: '✍️' },
+  ], []);
+
+  const completedGoals = useMemo(() => wellnessGoalList.filter((goal) => wellnessGoals[goal.key]).length, [wellnessGoalList, wellnessGoals]);
+  const goalProgress = Math.round((completedGoals / wellnessGoalList.length) * 100);
+  const careInsight = useMemo(() => {
+    if (averagePain > 6) return 'Pain is trending high — a slower pace, hydration, and extra rest may help.';
+    if (cyclePhase?.phase === 'Ovulation') return 'Your energy looks strong — this is a lovely time to focus on big tasks.';
+    if (cyclePhase?.phase === 'Luteal') return 'Your body may want extra comfort today — keep the plan gentle and calm.';
+    return 'Your wellness rhythm looks balanced — keep the day soft and intentional.';
+  }, [averagePain, cyclePhase]);
+
+  const toggleGoal = (key) => {
+    setWeeklyWellnessGoals((current) => ({
+      ...current,
+      [currentWeekKey]: {
+        ...current[currentWeekKey],
+        [key]: !current[currentWeekKey]?.[key],
+      },
+    }));
+  };
+
+  useEffect(() => {
+    if (goalProgress === 100) {
+      triggerConfetti();
+    }
+  }, [goalProgress]);
+
+  const currentCheckin = dailyCheckins[selectedDay] || { mood: 'calm', reflection: '' };
+
+  const moodCalendar = useMemo(() => {
+    const days = [];
+    const today = new Date();
+
+    for (let index = 6; index >= 0; index -= 1) {
+      const date = new Date(today);
+      date.setDate(today.getDate() - index);
+      const key = getDateKey(date);
+      const savedCheckin = dailyCheckins[key];
+      const matchingEntry = symptoms.find((item) => getDateKey(item.date) === key);
+      const mood = savedCheckin?.mood || matchingEntry?.mood || 'calm';
+      days.push({
+        key,
+        label: date.toLocaleDateString('en-US', { weekday: 'short' }),
+        shortLabel: date.toLocaleDateString('en-US', { month: 'short', day: 'numeric' }),
+        mood,
+        isToday: key === getDateKey(new Date()),
+      });
+    }
+
+    return days;
+  }, [dailyCheckins, symptoms]);
+
+  const currentDayInsight = useMemo(() => {
+    const selected = moodCalendar.find((item) => item.key === selectedDay);
+    return selected || moodCalendar[moodCalendar.length - 1];
+  }, [moodCalendar, selectedDay]);
+
+  const handleDaySelect = (dayKey) => {
+    setSelectedDay(dayKey);
+    setSearch(dayKey);
+  };
+
+  const updateCheckinField = (field, value) => {
+    setDailyCheckins((current) => ({
+      ...current,
+      [selectedDay]: {
+        mood: current[selectedDay]?.mood || 'calm',
+        reflection: current[selectedDay]?.reflection || '',
+        [field]: value,
+      },
+    }));
+  };
+
+  const triggerConfetti = () => {
+    confetti({
+      particleCount: 120,
+      spread: 80,
+      colors: ['#5b6cff', '#ec4899', '#8b5cf6', '#f59e0b'],
+      origin: { y: 0.6 },
+    });
+  };
+
   return (
     <div className="page">
+      {/* CYCLE HERO RING */}
+      <div style={{
+        background: 'var(--surface-raised)',
+        border: '1px solid var(--border)',
+        borderRadius: '20px',
+        padding: '28px',
+        marginBottom: '24px',
+        display: 'flex',
+        alignItems: 'center',
+        gap: '32px',
+        flexWrap: 'wrap',
+        justifyContent: 'center',
+      }}>
+        <CycleHeroRing cyclePhase={cyclePhase} avgCycleLength={prediction?.average_cycle_length} daysUntil={daysUntil} />
+
+        <div style={{ flex: '1 1 240px', minWidth: '220px' }}>
+          {cyclePhase ? (
+            <>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '8px' }}>
+                <span style={{ fontSize: '22px' }}>{cyclePhase.emoji}</span>
+                <span style={{ fontSize: '13px', fontWeight: 600, color: cyclePhase.color, textTransform: 'uppercase', letterSpacing: '0.05em' }}>
+                  {cyclePhase.phase} Phase
+                </span>
+              </div>
+              <p style={{ fontSize: '15px', color: 'var(--text-body)', marginBottom: '16px' }}>{dailyQuote}</p>
+              <p style={{ fontSize: '13px', color: 'var(--text-muted)', marginBottom: '16px' }}>{cyclePhase.tip}</p>
+              <div style={{ display: 'flex', gap: '18px', flexWrap: 'wrap', marginBottom: '18px' }}>
+                {['Menstrual', 'Follicular', 'Ovulation', 'Luteal'].map((label) => {
+                  const colorMap = { Menstrual: '#ef4444', Follicular: '#8b5cf6', Ovulation: '#ec4899', Luteal: '#f59e0b' };
+                  return (
+                    <div key={label} style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                      <span style={{ width: 8, height: 8, borderRadius: '50%', background: colorMap[label], display: 'inline-block' }} />
+                      <span style={{ fontSize: '12px', color: 'var(--text-muted)' }}>{label}</span>
+                    </div>
+                  );
+                })}
+              </div>
+              <button
+                type="button"
+                className="btn btn--primary"
+                onClick={triggerConfetti}
+                style={{ background: cyclePhase.color }}
+              >
+                {cyclePhase.emoji} I feel this!
+              </button>
+            </>
+          ) : (
+            <>
+              <p style={{ fontSize: '15px', color: 'var(--text-body)', marginBottom: '12px' }}>{dailyQuote}</p>
+              <Link to="/cycle" className="btn btn--primary">Log your first cycle</Link>
+            </>
+          )}
+        </div>
+      </div>
+
       <section className="page__hero">
         <div className="hero-copy">
           <div className="eyebrow">Executive dashboard</div>
@@ -219,6 +622,13 @@ const Dashboard = () => {
             <Link to="/chatbot" className="btn btn--ghost">
               Ask AI assistant
             </Link>
+            <button
+              type="button"
+              className="btn btn--ghost"
+              onClick={() => exportPDF(user, cycles, symptoms, prediction)}
+            >
+              Export PDF 📄
+            </button>
           </div>
         </div>
 
@@ -240,6 +650,7 @@ const Dashboard = () => {
         </div>
       </section>
 
+      {/* METRIC CARDS */}
       <section className="metric-grid">
         {loading
           ? Array.from({ length: 4 }).map((_, index) => <div key={index} className="metric-card skeleton skeleton--card" />)
@@ -250,9 +661,7 @@ const Dashboard = () => {
                 <div className="metric-card__value">{card.value}</div>
                 <div className="metric-card__note">{card.note}</div>
               </div>
-              <div className="metric-card__icon" aria-hidden="true">
-                {card.icon}
-              </div>
+              <div className="metric-card__icon" aria-hidden="true">{card.icon}</div>
             </article>
           ))}
       </section>
@@ -274,21 +683,31 @@ const Dashboard = () => {
           ) : (
             <div className="chart-grid">
               <div className="chart-card">
-                <Line data={cycleChartData} options={chartOptions} />
+                <Bar data={cycleChartData} options={chartOptions} />
               </div>
               <div className="chart-card">
-                <Doughnut
-                  data={moodChartData}
-                  options={{
-                    ...chartOptions,
-                    scales: undefined,
-                    cutout: '68%',
-                    plugins: {
-                      ...chartOptions.plugins,
-                      legend: { display: false },
-                    },
-                  }}
-                />
+                {moodChartData.labels.length > 1 ? (
+                  <Doughnut
+                    data={moodChartData}
+                    options={{
+                      ...chartOptions,
+                      scales: undefined,
+                      cutout: '68%',
+                      plugins: {
+                        ...chartOptions.plugins,
+                        legend: { display: false },
+                      },
+                    }}
+                  />
+                ) : (
+                  <div className="empty-state">
+                    <div className="empty-state__icon">◎</div>
+                    <strong>Not enough mood variety yet</strong>
+                    <p className="empty-state__copy">
+                      Log a few more check-ins with different moods to see your mood distribution.
+                    </p>
+                  </div>
+                )}
               </div>
             </div>
           )}
@@ -322,6 +741,105 @@ const Dashboard = () => {
             View recommendation set
           </button>
         </aside>
+      </section>
+
+      <section className="section-card reveal-element">
+        <div className="section-card__header">
+          <div>
+            <h2 className="section-card__title">Daily wellness planner</h2>
+            <p className="section-card__subtitle">A calm, interactive routine builder that turns wellness habits into a visible streak.</p>
+          </div>
+        </div>
+
+        <div className="wellness-planner">
+          <div className="wellness-planner__summary">
+            <div className="wellness-planner__ring" style={{ '--progress': goalProgress }}>
+              <span>{goalProgress}%</span>
+            </div>
+            <div style={{ flex: 1, minWidth: '220px' }}>
+              <div className="pill pill--ghost" style={{ padding: '8px 14px', borderRadius: '999px', fontSize: '0.78rem', letterSpacing: '0.08em', textTransform: 'uppercase', display: 'inline-flex' }}>
+                {currentWeekLabel}
+              </div>
+              <h3 className="quick-card__title" style={{ marginTop: '8px' }}>You are {completedGoals}/{wellnessGoalList.length} steps into your gentle care plan.</h3>
+              <p className="quick-card__copy" style={{ marginTop: '8px' }}>{careInsight}</p>
+            </div>
+          </div>
+
+          <div className="wellness-goals">
+            {wellnessGoalList.map((goal) => (
+              <button
+                key={goal.key}
+                type="button"
+                className={`wellness-goal${wellnessGoals[goal.key] ? ' wellness-goal--done' : ''}`}
+                onClick={() => toggleGoal(goal.key)}
+              >
+                <div className="wellness-goal__meta">
+                  <span className="wellness-goal__icon">{goal.icon}</span>
+                  <span>
+                    <div className="wellness-goal__label">{goal.label}</div>
+                    <div className="wellness-goal__hint">{goal.hint}</div>
+                  </span>
+                </div>
+                <span className="wellness-goal__status">{wellnessGoals[goal.key] ? '✓' : '○'}</span>
+              </button>
+            ))}
+          </div>
+        </div>
+      </section>
+
+      <section className="section-card">
+        <div className="section-card__header">
+          <div>
+            <h2 className="section-card__title">Daily check-in</h2>
+            <p className="section-card__subtitle">Capture how you feel today and save a small reflection for later.</p>
+          </div>
+        </div>
+
+        <div className="wellness-grid">
+          <div className="wellness-card">
+            <div className="wellness-card__title">How are you feeling?</div>
+            <div className="mood-pills">
+              {moodOptions.map((option) => (
+                <button
+                  key={option.key}
+                  type="button"
+                  className={`mood-pill${currentCheckin.mood === option.key ? ' mood-pill--active' : ''}`}
+                  onClick={() => updateCheckinField('mood', option.key)}
+                >
+                  {option.icon} {option.label}
+                </button>
+              ))}
+            </div>
+            <textarea
+              className="reflection-box"
+              value={currentCheckin.reflection}
+              onChange={(event) => updateCheckinField('reflection', event.target.value)}
+              placeholder="Write a short note about your energy, needs, or comfort today..."
+            />
+            <div className="wellness-card__copy">Every day’s mood and note are saved separately so you can review your personal rhythm later.</div>
+          </div>
+
+          <div className="wellness-card">
+            <div className="wellness-card__title">Week mood calendar</div>
+            <div className="mood-calendar">
+              {moodCalendar.map((day) => (
+                <button
+                  key={day.key}
+                  type="button"
+                  className={`calendar-day${selectedDay === day.key ? ' calendar-day--active' : ''}`}
+                  onClick={() => handleDaySelect(day.key)}
+                >
+                  <strong>{day.label.slice(0, 1)}</strong>
+                  <span>{day.shortLabel}</span>
+                  <span>{moodOptions.find((option) => option.key === day.mood)?.icon || '🌿'}</span>
+                </button>
+              ))}
+            </div>
+            <div className="wellness-card__copy">
+              {currentDayInsight ? `Showing ${currentDayInsight.shortLabel} — ${currentDayInsight.mood}` : 'No entries yet'}
+            </div>
+          </div>
+        </div>
       </section>
 
       <section className="section-card">
@@ -432,6 +950,16 @@ const Dashboard = () => {
                   Ovulation: <strong>{prediction?.ovulation_date || 'Pending'}</strong>
                 </p>
               </div>
+              {cyclePhase && (
+                <div className="mini-panel">
+                  <h3 className="quick-card__title">Current phase insight</h3>
+                  <p className="quick-card__copy">
+                    {cyclePhase.emoji} You are in the <strong>{cyclePhase.phase}</strong> phase (Day {cyclePhase.day}).
+                    <br />
+                    {cyclePhase.tip}
+                  </p>
+                </div>
+              )}
               <div className="mini-panel">
                 <h3 className="quick-card__title">Suggested follow-up</h3>
                 <p className="quick-card__copy">
@@ -447,6 +975,9 @@ const Dashboard = () => {
                 <Link to="/chatbot" className="btn btn--secondary">
                   Ask the assistant
                 </Link>
+                <button type="button" className="btn btn--ghost" onClick={() => exportPDF(user, cycles, symptoms, prediction)}>
+                  Export PDF 📄
+                </button>
               </div>
             </div>
           </section>

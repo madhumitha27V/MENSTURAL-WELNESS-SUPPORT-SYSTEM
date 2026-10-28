@@ -2,63 +2,133 @@ const db = require('../config/db');
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 
-// Register
-const register = (req, res) => {
-  const { name, email, password, age } = req.body;
+const normalizeEmail = (email) => String(email || '').trim().toLowerCase();
 
-  if (!name || !email || !password) {
-    return res.status(400).json({ message: 'All fields are required' });
+const validateRegistration = ({ name, email, password, age }) => {
+  const normalizedName = String(name || '').trim();
+  const normalizedEmail = normalizeEmail(email);
+  const normalizedPassword = String(password || '');
+
+  if (!normalizedName || !normalizedEmail || !normalizedPassword) {
+    return 'Name, email, and password are required';
   }
 
-  // Check if email exists
-  db.query('SELECT * FROM users WHERE email = ?', [email], (err, results) => {
-    if (err) return res.status(500).json({ message: 'Database error' });
-    if (results.length > 0) return res.status(400).json({ message: 'Email already exists' });
+  if (normalizedName.length > 100) {
+    return 'Name must be 100 characters or fewer';
+  }
 
-    // Hash password
-    const hashedPassword = bcrypt.hashSync(password, 10);
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(normalizedEmail) || normalizedEmail.length > 254) {
+    return 'Enter a valid email address';
+  }
 
-    // Insert user
-    db.query(
-      'INSERT INTO users (name, email, password, age) VALUES (?, ?, ?, ?)',
-      [name, email, hashedPassword, age],
-      (err, result) => {
-        if (err) return res.status(500).json({ message: 'Error creating user' });
-        res.status(201).json({ message: 'User registered successfully!' });
-      }
-    );
-  });
+  if (normalizedPassword.length < 8 || normalizedPassword.length > 72) {
+    return 'Password must be between 8 and 72 characters';
+  }
+
+  if (age !== undefined && age !== null && age !== '') {
+    const numericAge = Number(age);
+    if (!Number.isInteger(numericAge) || numericAge < 13 || numericAge > 120) {
+      return 'Age must be a whole number between 13 and 120';
+    }
+  }
+
+  return null;
 };
 
-// Login
-const login = (req, res) => {
-  const { email, password } = req.body;
+const register = async (req, res) => {
+  const { name, email, password, age } = req.body || {};
+  const validationError = validateRegistration({ name, email, password, age });
 
-  if (!email || !password) {
-    return res.status(400).json({ message: 'All fields are required' });
+  if (validationError) {
+    return res.status(400).json({ message: validationError });
   }
 
-  db.query('SELECT * FROM users WHERE email = ?', [email], (err, results) => {
-    if (err) return res.status(500).json({ message: 'Database error' });
-    if (results.length === 0) return res.status(400).json({ message: 'User not found' });
+  try {
+    const normalizedEmail = normalizeEmail(email);
+    const [existingUsers] = await db.promise().query(
+      'SELECT id FROM users WHERE email = ? LIMIT 1',
+      [normalizedEmail],
+    );
+
+    if (existingUsers.length > 0) {
+      return res.status(409).json({ message: 'An account with this email already exists' });
+    }
+
+    const hashedPassword = await bcrypt.hash(password, 12);
+    await db.promise().query(
+      'INSERT INTO users (name, email, password, age) VALUES (?, ?, ?, ?)',
+      [String(name).trim(), normalizedEmail, hashedPassword, age === '' ? null : age || null],
+    );
+
+    return res.status(201).json({ message: 'User registered successfully!' });
+  } catch (error) {
+    if (error.code === 'ER_DUP_ENTRY') {
+      return res.status(409).json({ message: 'An account with this email already exists' });
+    }
+
+    console.error('Error creating user:', error.message);
+    return res.status(500).json({ message: 'Unable to create account' });
+  }
+};
+
+const login = async (req, res) => {
+  const { email, password } = req.body || {};
+  const normalizedEmail = normalizeEmail(email);
+
+  if (!normalizedEmail || !password) {
+    return res.status(400).json({ message: 'Email and password are required' });
+  }
+
+  try {
+    const [results] = await db.promise().query(
+      'SELECT id, name, email, password, age FROM users WHERE email = ? LIMIT 1',
+      [normalizedEmail],
+    );
+
+    if (results.length === 0) {
+      return res.status(401).json({ message: 'Invalid email or password' });
+    }
 
     const user = results[0];
-    const isMatch = bcrypt.compareSync(password, user.password);
+    const isMatch = await bcrypt.compare(password, user.password);
 
-    if (!isMatch) return res.status(400).json({ message: 'Invalid password' });
+    if (!isMatch) {
+      return res.status(401).json({ message: 'Invalid email or password' });
+    }
 
     const token = jwt.sign(
       { id: user.id, email: user.email },
       process.env.JWT_SECRET,
-      { expiresIn: '7d' }
+      { expiresIn: '7d' },
     );
 
-    res.json({
+    return res.json({
       message: 'Login successful!',
       token,
-      user: { id: user.id, name: user.name, email: user.email }
+      user: { id: user.id, name: user.name, email: user.email, age: user.age },
     });
-  });
+  } catch (error) {
+    console.error('Login error:', error.message);
+    return res.status(500).json({ message: 'Unable to sign in' });
+  }
 };
 
-module.exports = { register, login };
+const getProfile = async (req, res) => {
+  try {
+    const [results] = await db.promise().query(
+      'SELECT id, name, email, age FROM users WHERE id = ? LIMIT 1',
+      [req.user.id],
+    );
+
+    if (results.length === 0) {
+      return res.status(404).json({ message: 'User account not found' });
+    }
+
+    return res.json({ user: results[0] });
+  } catch (error) {
+    console.error('Profile lookup error:', error.message);
+    return res.status(500).json({ message: 'Unable to load profile' });
+  }
+};
+
+module.exports = { register, login, getProfile };
